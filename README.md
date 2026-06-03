@@ -1,83 +1,197 @@
-# ML Fraud Detection Service
+# Docker-сервис для детекции фрода карточных транзакций
 
-DISCLAIMER
+Проект упаковывает простую CPU-only ML-модель в Docker-сервис для batch inference. Контейнер читает файл `/app/input/test.csv`, применяет заранее обученную модель из `/app/models/model.joblib` и сохраняет результат в `/app/output/sample_submission.csv` в формате шаблона соревнования.
 
-Сервис подготовлен в демонстрационных целях для студентов курса МТС ШАД 2025 в рамках занятий по MLOps.
-Датасеты предоставлены в рамках соревнования https://www.kaggle.com/competitions/teta-ml-1-2025
+> Важно: контейнер **не обучает модель**. Перед сборкой Docker image нужно локально подготовить артефакт `models/model.joblib` командой `python train_model.py`.
 
-Сервис для автоматического обнаружения мошеннических транзакций в режиме батчевого скоринга. Обрабатывает CSV-файлы из указанной директории с использованием предобученной CatBoost модели. 
+## Структура репозитория
 
-## Архитектура решения
-```
-├── .gitignore
+```text
+.
 ├── Dockerfile
 ├── README.md
-├── app/
-│ └── app.py # Ядро сервиса с обработчиком файлов
-├── models/
-│ └── my_catboost.cbm # Сериализованная модель CatBoost
+├── requirements.txt
+├── train_model.py              # локальное обучение и сохранение models/model.joblib
+├── sample_submition.csv        # шаблон submission из соревнования; поддерживается и имя sample_submission.csv
 ├── src/
-│ ├── preprocessing.py # Пайплайн обработки данных
-│ └── scorer.py # Модуль прогнозирования
-└── train_data/
-│ └── train.csv # Данные для обучения (reference), необходимо скачать из соревнования
-└── input/ # Директория для загрузки файлов на скоринг
-└── output/ # Директория с результатами скоринга
+│   ├── config.py               # пути, списки колонок и фичей
+│   ├── load_data.py            # загрузка и проверка test.csv
+│   ├── preprocess.py           # feature engineering для inference
+│   ├── score.py                # загрузка модели и скоринг
+│   ├── save_submission.py      # сохранение результата по шаблону
+│   └── pipeline.py             # последовательный запуск всех этапов inference
+├── app/
+│   └── app.py                  # совместимый entrypoint, запускающий pipeline
+├── models/
+│   └── .gitkeep                # сама модель model.joblib не хранится в Git
+├── input/
+│   └── .gitkeep                # сюда пользователь кладёт test.csv
+└── output/
+    └── .gitkeep                # сюда контейнер пишет sample_submission.csv
 ```
 
-## Ключевые особенности
+## Входные и выходные файлы
 
-### Многоуровневое логирование
-- Регистрация всех событий в файл `/app/logs/service.log`
-- Консольный вывод для мониторинга в реальном времени
-- 3 уровня детализации:
-  - `INFO`: Основные этапы обработки
-  - `DEBUG`: Детали преобразования данных
-  - `ERROR`: Критические сбои с трейсбэками
+### Вход
 
-### Пайплайн обработки данных (`preprocessing.py`)
-1. **Временные признаки**:
-   - Извлечение часа, дня недели, месяца
-   - Удаление исходного timestamp
-   
-2. **Геопространственные расчеты**:
-   - Расчет расстояния (км) между клиентом и мерчантом
-   - Использование формулы гаверсинусов
+Контейнер ожидает файл:
 
-3. **Категориальные переменные**:
-   - Группировка редких категорий (N+1 кодирование)
-   - Mean-encoding с учетом целевой переменной
+```text
+/app/input/test.csv
+```
 
-4. **Числовые признаки**:
-   - Импутация средними значениями
-   - Логарифмирование с добавлением эпсилон-коррекции
+В локальном репозитории это обычно файл:
 
-### Модельный слой (`scorer.py`)
-- Порог классификации: 0.98
-- Автоматическая загрузка модели при инициализации
-- Батчевая обработка через `predict_proba`
+```text
+input/test.csv
+```
 
-## Быстрый старт
+Обязательные колонки входного `test.csv`:
 
-### Требования
-- Docker 20.10+
-- 2 ГБ свободного места
-- Порты: только файловая система
+```text
+transaction_time, merch, cat_id, amount, name_1, name_2, gender, street,
+one_city, us_state, post_code, lat, lon, population_city, jobs,
+merchant_lat, merchant_lon
+```
 
-### Запуск сервиса
+Если каких-то обязательных колонок нет, сервис завершится с понятной ошибкой и списком пропущенных колонок. Лишние колонки допускаются и игнорируются. Колонка `target`, если случайно есть во входном файле, не используется при inference.
 
-1. Скачайте файл `train.csv` из соревнования https://www.kaggle.com/competitions/teta-ml-1-2025 и разместите в директории `./train_data`
-2. Соберите образ
+### Выход
+
+Результат всегда сохраняется в:
+
+```text
+/app/output/sample_submission.csv
+```
+
+При запуске с volume этот файл появится локально как:
+
+```text
+output/sample_submission.csv
+```
+
+Колонки и порядок колонок берутся из шаблона `sample_submission.csv` или `sample_submition.csv`. Предсказания записываются в последнюю колонку шаблона, например `prediction`.
+
+## Подготовка модели
+
+В Git не добавляются бинарные файлы моделей. Перед сборкой Docker image нужно создать локальный артефакт:
+
 ```bash
-docker build -t fraud_detector .
+python -m pip install -r requirements.txt
+python train_model.py
 ```
-3. Запустите контейнер с монтированием томов
+
+Скрипт обучает простой `scikit-learn` pipeline:
+
+- `transaction_time` преобразуется в час, день недели, месяц, день месяца и признак выходного дня;
+- координаты клиента и продавца используются для расчёта расстояния `distance_km`;
+- числовые признаки заполняются медианой и масштабируются;
+- категориальные признаки заполняются значением `unknown` и кодируются через `OneHotEncoder`;
+- classifier: `LogisticRegression` с `class_weight="balanced"`.
+
+После успешного запуска должен появиться файл:
+
+```text
+models/model.joblib
+```
+
+Если `train.csv` в репозитории является только Git LFS pointer-файлом, сначала загрузите реальный датасет из соревнования или выполните `git lfs pull`, а затем повторите обучение.
+
+## Сборка Docker image
+
+Dockerfile ожидает, что `models/model.joblib` уже существует. Если файла нет, сборка завершится с понятным сообщением об ошибке.
+
+### Linux/macOS
+
 ```bash
-docker run -it --rm -v ./input:/app/input \
-                    -v ./output:/app/output \
-                    fraud_detector
+docker build -t fraud-mlops-service .
 ```
-4. После запуска сервиса (появления в логах сообщения: `__main__ - INFO - File observer started`) можно приступать к скорингу данных:
- - Разместите файл формата test.csv из соревнования https://www.kaggle.com/competitions/teta-ml-1-2025 в директории `./input`
- - Подождите выполнения препроцессинга и скоринга датасета (в логах будет указано название сформированного файла)
- - Полученный результат моделирования будет выгружен сервисом в директорию `./output`
+
+### Windows PowerShell
+
+```powershell
+docker build -t fraud-mlops-service .
+```
+
+## Запуск контейнера
+
+### Linux/macOS
+
+```bash
+mkdir -p input output
+cp test.csv input/test.csv
+docker run --rm \
+  -v "$(pwd)/input:/app/input" \
+  -v "$(pwd)/output:/app/output" \
+  fraud-mlops-service
+ls output
+```
+
+### Windows PowerShell
+
+```powershell
+mkdir input
+mkdir output
+copy test.csv input/test.csv
+docker run --rm `
+  -v ${PWD}/input:/app/input `
+  -v ${PWD}/output:/app/output `
+  fraud-mlops-service
+dir output
+```
+
+## Проверка результата
+
+Проверить, что файл создан и совпадает с шаблоном по количеству строк и колонкам, можно так:
+
+```bash
+python - <<'PY'
+import pandas as pd
+from pathlib import Path
+
+sample_path = Path('sample_submission.csv') if Path('sample_submission.csv').exists() else Path('sample_submition.csv')
+submission = pd.read_csv('output/sample_submission.csv')
+sample = pd.read_csv(sample_path)
+
+assert list(submission.columns) == list(sample.columns), 'Колонки не совпадают с шаблоном'
+assert len(submission) == len(sample), 'Количество строк не совпадает с шаблоном'
+print('OK:', submission.shape)
+PY
+```
+
+## Полный сценарий для Linux/macOS
+
+```bash
+python -m pip install -r requirements.txt
+python train_model.py
+
+docker build -t fraud-mlops-service .
+mkdir -p input output
+cp test.csv input/test.csv
+docker run --rm \
+  -v "$(pwd)/input:/app/input" \
+  -v "$(pwd)/output:/app/output" \
+  fraud-mlops-service
+ls output
+```
+
+## Полный сценарий для Windows PowerShell
+
+```powershell
+python -m pip install -r requirements.txt
+python train_model.py
+
+docker build -t fraud-mlops-service .
+mkdir input
+mkdir output
+copy test.csv input/test.csv
+docker run --rm `
+  -v ${PWD}/input:/app/input `
+  -v ${PWD}/output:/app/output `
+  fraud-mlops-service
+dir output
+```
+
+## Почему модель не хранится в Git
+
+Файлы `models/*.joblib`, `models/*.pkl` и `models/*.cbm` игнорируются через `.gitignore`, чтобы Pull Request содержал только текстовые файлы. В репозитории остаётся `models/.gitkeep`, а модель создаётся локально перед сборкой Docker image.

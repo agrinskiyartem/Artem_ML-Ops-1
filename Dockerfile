@@ -2,20 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Создание директории для логов
-RUN mkdir -p /app/logs && \
-    touch /app/logs/service.log && \
-    chmod -R 777 /app/logs  # Права на запись для всех пользователей
-
-# Установка зависимостей
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование исходного кода
 COPY . .
 
-# Точки монтирования
-VOLUME /app/input
-VOLUME /app/output
+RUN mkdir -p /app/input /app/output /app/models && \
+    test -f /app/models/model.joblib || \
+    (echo "ERROR: /app/models/model.joblib was not found. Run 'python train_model.py' before building the Docker image." >&2; exit 1)
 
-CMD ["python", "./app/app.py"]
+VOLUME ["/app/input", "/app/output"]
+
+CMD ["python", "-m", "src.pipeline"]
