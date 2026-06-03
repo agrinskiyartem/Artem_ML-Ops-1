@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+input/*
+output/*
+README.md
+train.csv
+test.csv
+
+models/*.cbm
+models/*.pkl
